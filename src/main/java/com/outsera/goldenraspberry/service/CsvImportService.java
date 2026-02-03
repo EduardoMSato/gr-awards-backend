@@ -1,0 +1,103 @@
+package com.outsera.goldenraspberry.service;
+
+import com.outsera.goldenraspberry.model.Movie;
+import com.outsera.goldenraspberry.repository.MovieRepository;
+import org.apache.commons.csv.CSVFormat;
+import org.apache.commons.csv.CSVParser;
+import org.apache.commons.csv.CSVRecord;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.core.io.ClassPathResource;
+import org.springframework.stereotype.Service;
+
+import javax.annotation.PostConstruct;
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
+
+/**
+ * Service responsible for importing movie data from CSV file on application startup.
+ * <p>
+ * Reads the movielist.csv file, parses it using Apache Commons CSV,
+ * and persists the data to the database via MovieRepository.
+ * </p>
+ */
+@Service
+public class CsvImportService {
+
+    private static final Logger logger = LoggerFactory.getLogger(CsvImportService.class);
+    private static final String CSV_FILE = "movielist.csv";
+
+    private final MovieRepository movieRepository;
+
+    @Autowired
+    public CsvImportService(MovieRepository movieRepository) {
+        this.movieRepository = movieRepository;
+    }
+
+    /**
+     * Loads CSV data on application startup.
+     * <p>
+     * Annotated with @PostConstruct to execute after dependency injection.
+     * Reads movielist.csv from classpath and imports all records.
+     * </p>
+     */
+    @PostConstruct
+    public void loadCsvData() {
+        logger.info("Starting CSV import from {}", CSV_FILE);
+
+        try {
+            ClassPathResource resource = new ClassPathResource(CSV_FILE);
+            BufferedReader reader = new BufferedReader(
+                new InputStreamReader(resource.getInputStream(), StandardCharsets.UTF_8)
+            );
+
+            CSVParser csvParser = CSVFormat.DEFAULT
+                .withDelimiter(';')
+                .withFirstRecordAsHeader()
+                .withIgnoreHeaderCase()
+                .withTrim()
+                .parse(reader);
+
+            int successCount = 0;
+            int errorCount = 0;
+
+            for (CSVRecord record : csvParser) {
+                try {
+                    Movie movie = parseMovie(record);
+                    movieRepository.save(movie);
+                    successCount++;
+                } catch (Exception e) {
+                    errorCount++;
+                    logger.warn("Failed to import record {}: {}", record.getRecordNumber(), e.getMessage());
+                }
+            }
+
+            logger.info("CSV import completed. Success: {}, Errors: {}", successCount, errorCount);
+
+        } catch (Exception e) {
+            logger.error("Failed to load CSV file: {}", e.getMessage(), e);
+            throw new RuntimeException("Could not import CSV data", e);
+        }
+    }
+
+    /**
+     * Parses a CSV record into a Movie entity.
+     *
+     * @param record CSV record to parse
+     * @return Movie entity
+     */
+    private Movie parseMovie(CSVRecord record) {
+        Integer year = Integer.parseInt(record.get("year"));
+        String title = record.get("title");
+        String studios = record.get("studios");
+        String producers = record.get("producers");
+        String winnerValue = record.get("winner");
+
+        // Convert winner field: "yes" -> true, empty/other -> false
+        Boolean winner = "yes".equalsIgnoreCase(winnerValue);
+
+        return new Movie(year, title, studios, producers, winner);
+    }
+}
