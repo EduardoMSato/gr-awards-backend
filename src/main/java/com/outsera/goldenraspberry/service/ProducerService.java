@@ -10,7 +10,6 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.util.*;
-import java.util.stream.Collectors;
 
 /**
  * Service responsible for calculating producer award intervals.
@@ -33,60 +32,75 @@ public class ProducerService {
 
     /**
      * Gets producers with min and max intervals between consecutive wins.
+     * <p>
+     * Processes data in two passes:
+     * 1. Build producer → sorted win years map
+     * 2. Calculate intervals and find min/max simultaneously
+     * </p>
      *
      * @return Response DTO with min and max interval lists
      */
     public ProducerIntervalResponseDTO getProducerIntervals() {
         logger.debug("Calculating producer intervals");
 
-        // Step 1: Load all winning movies
         List<Movie> winners = movieRepository.findByWinnerTrue();
         logger.debug("Found {} winning movies", winners.size());
 
-        // Step 2: Build producer → years map
-        Map<String, List<Integer>> producerYears = buildProducerYearsMap(winners);
+        // Pass 1: Build producer → years map (TreeSet keeps years sorted on insert)
+        Map<String, TreeSet<Integer>> producerYears = new HashMap<>();
+        for (Movie movie : winners) {
+            for (String producer : parseProducers(movie.getProducers())) {
+                producerYears.computeIfAbsent(producer, k -> new TreeSet<>()).add(movie.getYear());
+            }
+        }
         logger.debug("Found {} unique producers", producerYears.size());
 
-        // Step 3: Calculate intervals for each producer
-        List<ProducerIntervalDTO> allIntervals = calculateAllIntervals(producerYears);
-        logger.debug("Calculated {} total intervals", allIntervals.size());
+        // Pass 2: Calculate intervals and track min/max in a single pass
+        int minInterval = Integer.MAX_VALUE;
+        int maxInterval = Integer.MIN_VALUE;
+        List<ProducerIntervalDTO> minIntervals = new ArrayList<>();
+        List<ProducerIntervalDTO> maxIntervals = new ArrayList<>();
 
-        // Step 4: Find min and max
-        List<ProducerIntervalDTO> minIntervals = findMinIntervals(allIntervals);
-        List<ProducerIntervalDTO> maxIntervals = findMaxIntervals(allIntervals);
+        for (Map.Entry<String, TreeSet<Integer>> entry : producerYears.entrySet()) {
+            TreeSet<Integer> years = entry.getValue();
+            if (years.size() < 2) continue;
 
+            String producer = entry.getKey();
+            Integer previousWin = null;
+            for (Integer year : years) {
+                if (previousWin == null) {
+                    previousWin = year;
+                    continue;
+                }
+                int followingWin = year;
+                int interval = followingWin - previousWin;
+                ProducerIntervalDTO dto = new ProducerIntervalDTO(producer, interval, previousWin, followingWin);
+
+                if (interval < minInterval) {
+                    minInterval = interval;
+                    minIntervals.clear();
+                    minIntervals.add(dto);
+                } else if (interval == minInterval) {
+                    minIntervals.add(dto);
+                }
+
+                if (interval > maxInterval) {
+                    maxInterval = interval;
+                    maxIntervals.clear();
+                    maxIntervals.add(dto);
+                } else if (interval == maxInterval) {
+                    maxIntervals.add(dto);
+                }
+                previousWin = followingWin;
+            }
+        }
+
+        logger.debug("Result: min interval={}, max interval={}", minInterval, maxInterval);
         return new ProducerIntervalResponseDTO(minIntervals, maxIntervals);
     }
 
     /**
-     * Builds a map of producer name to list of win years.
-     *
-     * @param winners List of winning movies
-     * @return Map of producer → years
-     */
-    private Map<String, List<Integer>> buildProducerYearsMap(List<Movie> winners) {
-        Map<String, List<Integer>> producerYears = winners.stream()
-            .flatMap(movie -> parseProducers(movie.getProducers()).stream()
-                .map(producer -> new AbstractMap.SimpleEntry<>(producer, movie.getYear())))
-            .collect(Collectors.groupingBy(
-                Map.Entry::getKey,
-                Collectors.mapping(Map.Entry::getValue, Collectors.toList())
-            ));
-
-        // Sort years for each producer
-        producerYears.values().forEach(Collections::sort);
-
-        return producerYears;
-    }
-
-    /**
      * Parses producer names from a comma/and-separated string.
-     * <p>
-     * Examples:
-     * - "Producer A" → ["Producer A"]
-     * - "Producer A and Producer B" → ["Producer A", "Producer B"]
-     * - "Producer A, Producer B and Producer C" → ["Producer A", "Producer B", "Producer C"]
-     * </p>
      *
      * @param producersString Raw producers string from CSV
      * @return List of individual producer names
@@ -96,89 +110,14 @@ public class ProducerService {
             return Collections.emptyList();
         }
 
-        // Replace ", " with " and " to normalize separators
-        String normalized = producersString.replace(", ", " and ");
-
-        // Split on " and " and trim each name
-        return Arrays.stream(normalized.split(" and "))
-            .map(String::trim)
-            .filter(name -> !name.isEmpty())
-            .collect(Collectors.toList());
-    }
-
-    /**
-     * Calculates all intervals for all producers with multiple wins.
-     *
-     * @param producerYears Map of producer → win years
-     * @return List of all intervals
-     */
-    private List<ProducerIntervalDTO> calculateAllIntervals(Map<String, List<Integer>> producerYears) {
-        return producerYears.entrySet().stream()
-            .filter(entry -> entry.getValue().size() >= 2)
-            .flatMap(entry -> calculateIntervalsForProducer(entry.getKey(), entry.getValue()).stream())
-            .collect(Collectors.toList());
-    }
-
-    /**
-     * Calculates intervals for a single producer.
-     *
-     * @param producer Producer name
-     * @param years    Sorted list of win years
-     * @return List of intervals for this producer
-     */
-    private List<ProducerIntervalDTO> calculateIntervalsForProducer(String producer, List<Integer> years) {
-        List<ProducerIntervalDTO> intervals = new ArrayList<>();
-
-        for (int i = 0; i < years.size() - 1; i++) {
-            int previousWin = years.get(i);
-            int followingWin = years.get(i + 1);
-            int interval = followingWin - previousWin;
-
-            intervals.add(new ProducerIntervalDTO(producer, interval, previousWin, followingWin));
+        String[] names = producersString.replace(", ", " and ").split(" and ");
+        List<String> producers = new ArrayList<>(names.length);
+        for (String name : names) {
+            String trimmed = name.trim();
+            if (!trimmed.isEmpty()) {
+                producers.add(trimmed);
+            }
         }
-
-        return intervals;
-    }
-
-    /**
-     * Finds all intervals matching the minimum value.
-     *
-     * @param allIntervals List of all intervals
-     * @return List of intervals with minimum value (handles ties)
-     */
-    private List<ProducerIntervalDTO> findMinIntervals(List<ProducerIntervalDTO> allIntervals) {
-        if (allIntervals.isEmpty()) {
-            return Collections.emptyList();
-        }
-
-        int minInterval = allIntervals.stream()
-            .mapToInt(ProducerIntervalDTO::getInterval)
-            .min()
-            .orElse(0);
-
-        return allIntervals.stream()
-            .filter(dto -> dto.getInterval() == minInterval)
-            .collect(Collectors.toList());
-    }
-
-    /**
-     * Finds all intervals matching the maximum value.
-     *
-     * @param allIntervals List of all intervals
-     * @return List of intervals with maximum value (handles ties)
-     */
-    private List<ProducerIntervalDTO> findMaxIntervals(List<ProducerIntervalDTO> allIntervals) {
-        if (allIntervals.isEmpty()) {
-            return Collections.emptyList();
-        }
-
-        int maxInterval = allIntervals.stream()
-            .mapToInt(ProducerIntervalDTO::getInterval)
-            .max()
-            .orElse(0);
-
-        return allIntervals.stream()
-            .filter(dto -> dto.getInterval() == maxInterval)
-            .collect(Collectors.toList());
+        return producers;
     }
 }

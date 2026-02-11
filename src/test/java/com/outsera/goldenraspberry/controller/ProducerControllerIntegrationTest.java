@@ -16,6 +16,8 @@ import static org.junit.jupiter.api.Assertions.*;
  * <p>
  * Tests the complete flow from HTTP request through service layer
  * to database, using the actual CSV data loaded on startup.
+ * These tests validate that API responses match the expected results
+ * derived from the standard movielist.csv file.
  * </p>
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
@@ -25,81 +27,61 @@ class ProducerControllerIntegrationTest {
     private TestRestTemplate restTemplate;
 
     /**
-     * Tests the GET /api/producers/prize-intervals endpoint.
+     * Tests that the API returns the exact expected min and max intervals
+     * based on the standard movielist.csv file content.
      * <p>
-     * Verifies:
-     * - HTTP 200 OK response
-     * - Response body structure (min and max arrays)
-     * - Min intervals are less than or equal to max intervals
-     * - Data consistency and correctness
+     * Expected results from CSV:
+     * - Min interval: Joel Silver with 1 year gap (1990 → 1991)
+     * - Max interval: Matthew Vaughn with 13 year gap (2002 → 2015)
      * </p>
      */
     @Test
     void testGetProducerIntervals() {
-        // When
         ResponseEntity<ProducerIntervalResponseDTO> response = restTemplate.getForEntity(
             "/api/producers/prize-intervals",
             ProducerIntervalResponseDTO.class
         );
 
-        // Then
         assertEquals(HttpStatus.OK, response.getStatusCode());
         assertNotNull(response.getBody());
 
         ProducerIntervalResponseDTO body = response.getBody();
 
-        // Verify min interval exists and is valid
+        // Validate min intervals match CSV-derived expected values
         assertNotNull(body.getMin());
-        assertFalse(body.getMin().isEmpty());
+        assertEquals(1, body.getMin().size(), "Expected exactly 1 producer with minimum interval");
 
         ProducerIntervalDTO minInterval = body.getMin().get(0);
-        assertNotNull(minInterval.getProducer());
-        assertFalse(minInterval.getProducer().isEmpty());
-        assertTrue(minInterval.getInterval() > 0);
-        assertTrue(minInterval.getFollowingWin() > minInterval.getPreviousWin());
-        assertEquals(
-            minInterval.getInterval(),
-            minInterval.getFollowingWin() - minInterval.getPreviousWin()
-        );
+        assertEquals("Joel Silver", minInterval.getProducer());
+        assertEquals(1, minInterval.getInterval());
+        assertEquals(1990, minInterval.getPreviousWin());
+        assertEquals(1991, minInterval.getFollowingWin());
 
-        // Verify max interval exists and is valid
+        // Validate max intervals match CSV-derived expected values
         assertNotNull(body.getMax());
-        assertFalse(body.getMax().isEmpty());
+        assertEquals(1, body.getMax().size(), "Expected exactly 1 producer with maximum interval");
 
         ProducerIntervalDTO maxInterval = body.getMax().get(0);
-        assertNotNull(maxInterval.getProducer());
-        assertFalse(maxInterval.getProducer().isEmpty());
-        assertTrue(maxInterval.getInterval() > 0);
-        assertTrue(maxInterval.getFollowingWin() > maxInterval.getPreviousWin());
-        assertEquals(
-            maxInterval.getInterval(),
-            maxInterval.getFollowingWin() - maxInterval.getPreviousWin()
-        );
-
-        // Verify min interval is less than or equal to max interval
-        assertTrue(minInterval.getInterval() <= maxInterval.getInterval(),
-            "Min interval should be less than or equal to max interval");
+        assertEquals("Matthew Vaughn", maxInterval.getProducer());
+        assertEquals(13, maxInterval.getInterval());
+        assertEquals(2002, maxInterval.getPreviousWin());
+        assertEquals(2015, maxInterval.getFollowingWin());
     }
 
     /**
-     * Tests that the response contains valid data structures.
-     * <p>
-     * Ensures all fields are populated and intervals are positive.
-     * </p>
+     * Tests that all returned intervals have consistent and valid data.
+     * Ensures interval = followingWin - previousWin for every entry.
      */
     @Test
     void testResponseStructure() {
-        // When
         ResponseEntity<ProducerIntervalResponseDTO> response = restTemplate.getForEntity(
             "/api/producers/prize-intervals",
             ProducerIntervalResponseDTO.class
         );
 
-        // Then
         ProducerIntervalResponseDTO body = response.getBody();
         assertNotNull(body);
 
-        // Verify all min intervals have valid data
         body.getMin().forEach(interval -> {
             assertNotNull(interval.getProducer());
             assertFalse(interval.getProducer().isEmpty());
@@ -112,7 +94,6 @@ class ProducerControllerIntegrationTest {
             );
         });
 
-        // Verify all max intervals have valid data
         body.getMax().forEach(interval -> {
             assertNotNull(interval.getProducer());
             assertFalse(interval.getProducer().isEmpty());
@@ -124,5 +105,11 @@ class ProducerControllerIntegrationTest {
                 interval.getFollowingWin() - interval.getPreviousWin()
             );
         });
+
+        // Min interval must be less than or equal to max interval
+        assertTrue(
+            body.getMin().get(0).getInterval() <= body.getMax().get(0).getInterval(),
+            "Min interval should be less than or equal to max interval"
+        );
     }
 }
