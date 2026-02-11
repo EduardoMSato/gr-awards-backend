@@ -32,11 +32,6 @@ public class ProducerService {
 
     /**
      * Gets producers with min and max intervals between consecutive wins.
-     * <p>
-     * Processes data in two passes:
-     * 1. Build producer → sorted win years map
-     * 2. Calculate intervals and find min/max simultaneously
-     * </p>
      *
      * @return Response DTO with min and max interval lists
      */
@@ -46,18 +41,25 @@ public class ProducerService {
         List<Movie> winners = movieRepository.findByWinnerTrue();
         logger.debug("Found {} winning movies", winners.size());
 
-        // Pass 1: Build producer → years map (TreeSet keeps years sorted on insert)
+        Map<String, TreeSet<Integer>> producerYears = buildProducerYearsMap(winners);
+        logger.debug("Found {} unique producers", producerYears.size());
+
+        return findMinMaxIntervals(producerYears);
+    }
+
+    private Map<String, TreeSet<Integer>> buildProducerYearsMap(List<Movie> winners) {
         Map<String, TreeSet<Integer>> producerYears = new HashMap<>();
         for (Movie movie : winners) {
             for (String producer : parseProducers(movie.getProducers())) {
                 producerYears.computeIfAbsent(producer, k -> new TreeSet<>()).add(movie.getYear());
             }
         }
-        logger.debug("Found {} unique producers", producerYears.size());
+        return producerYears;
+    }
 
-        // Pass 2: Calculate intervals and track min/max in a single pass
-        int minInterval = Integer.MAX_VALUE;
-        int maxInterval = Integer.MIN_VALUE;
+    private ProducerIntervalResponseDTO findMinMaxIntervals(Map<String, TreeSet<Integer>> producerYears) {
+        int[] minValue = {Integer.MAX_VALUE};
+        int[] maxValue = {Integer.MIN_VALUE};
         List<ProducerIntervalDTO> minIntervals = new ArrayList<>();
         List<ProducerIntervalDTO> maxIntervals = new ArrayList<>();
 
@@ -72,39 +74,33 @@ public class ProducerService {
                     previousWin = year;
                     continue;
                 }
-                int followingWin = year;
-                int interval = followingWin - previousWin;
-                ProducerIntervalDTO dto = new ProducerIntervalDTO(producer, interval, previousWin, followingWin);
+                ProducerIntervalDTO dto = new ProducerIntervalDTO(producer, year - previousWin, previousWin, year);
 
-                if (interval < minInterval) {
-                    minInterval = interval;
-                    minIntervals.clear();
-                    minIntervals.add(dto);
-                } else if (interval == minInterval) {
-                    minIntervals.add(dto);
-                }
+                trackExtreme(dto, minValue, minIntervals, true);
+                trackExtreme(dto, maxValue, maxIntervals, false);
 
-                if (interval > maxInterval) {
-                    maxInterval = interval;
-                    maxIntervals.clear();
-                    maxIntervals.add(dto);
-                } else if (interval == maxInterval) {
-                    maxIntervals.add(dto);
-                }
-                previousWin = followingWin;
+                previousWin = year;
             }
         }
 
-        logger.debug("Result: min interval={}, max interval={}", minInterval, maxInterval);
+        logger.debug("Result: min interval={}, max interval={}", minValue[0], maxValue[0]);
         return new ProducerIntervalResponseDTO(minIntervals, maxIntervals);
     }
 
-    /**
-     * Parses producer names from a comma/and-separated string.
-     *
-     * @param producersString Raw producers string from CSV
-     * @return List of individual producer names
-     */
+    private void trackExtreme(ProducerIntervalDTO dto, int[] currentExtreme,
+                              List<ProducerIntervalDTO> extremeList, boolean seekingMin) {
+        int interval = dto.getInterval();
+        boolean isBetter = seekingMin ? interval < currentExtreme[0] : interval > currentExtreme[0];
+
+        if (isBetter) {
+            currentExtreme[0] = interval;
+            extremeList.clear();
+            extremeList.add(dto);
+        } else if (interval == currentExtreme[0]) {
+            extremeList.add(dto);
+        }
+    }
+
     private List<String> parseProducers(String producersString) {
         if (producersString == null || producersString.trim().isEmpty()) {
             return Collections.emptyList();
